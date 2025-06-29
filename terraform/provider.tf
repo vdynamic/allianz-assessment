@@ -11,7 +11,7 @@ terraform {
 # Primary region provider
 provider "aws" {
   region = "eu-west-1"
-  
+
   default_tags {
     tags = {
       Environment = "production"
@@ -25,8 +25,8 @@ provider "aws" {
 # Cross-region provider for backup replication
 provider "aws" {
   alias  = "cross_region"
-  region = "eu-central-1"
-  
+  region = module.aws_backup.cross_region_destination
+
   default_tags {
     tags = {
       Environment = "production"
