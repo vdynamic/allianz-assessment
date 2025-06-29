@@ -1,93 +1,87 @@
-resource "aws_s3_bucket" "example" {
-  bucket = "allianz-trade-example-data-bucket"
-  
-  tags = {
-    ToBackup = "true"
-    Owner    = "dataengineering@eulerhermes.com"
-  }
+# Backup Vault
+resource "aws_backup_vault" "primary" {
+  name        = var.backup_vault_name
+  kms_key_arn = var.kms_key_id
+  tags        = var.tags
 }
 
-resource "aws_s3_bucket_versioning" "example" {
-  bucket = aws_s3_bucket.example.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "example" {
-  bucket = aws_s3_bucket.example.id
+# Backup Plan
+resource "aws_backup_plan" "comprehensive" {
+  name = var.backup_plan_name
 
   rule {
-    apply_server_side_encryption_by_default {
-      kms_master_key_id = aws_kms_key.backup_encryption.arn
-      sse_algorithm     = "aws:kms"
+    rule_name         = "daily_backups"
+    target_vault_name = aws_backup_vault.primary.name
+    schedule          = var.backup_frequency
+
+    lifecycle {
+      delete_after = var.backup_retention_days
+    }
+
+    copy_action {
+      destination_vault_arn = aws_backup_vault.cross_region.arn
+      lifecycle {
+        delete_after = var.cross_region_retention_days
+      }
+    }
+
+    copy_action {
+      destination_vault_arn = "arn:aws:backup:${var.cross_region_destination}:${var.cross_account_destination}:backup-vault:${var.backup_vault_name}"
+      lifecycle {
+        delete_after = var.cross_account_retention_days
+      }
     }
   }
+
+  tags = var.tags
 }
 
-# Example RDS instance
-resource "aws_db_subnet_group" "example" {
-  name       = "allianz-trade-example-subnet-group"
-  subnet_ids = ["subnet-12345678", "subnet-87654321"] # Replace with actual subnet IDs
-
-  tags = {
-    Name = "Allianz Trade Example DB subnet group"
-  }
+# Backup Vault for cross-region replication
+resource "aws_backup_vault" "cross_region" {
+  provider    = aws.cross_region
+  name        = var.backup_vault_name
+  kms_key_arn = var.kms_key_id
+  tags        = var.tags
 }
 
-resource "aws_db_instance" "example" {
-  identifier     = "allianz-trade-example-db"
-  engine         = "postgres"
-  engine_version = "14.9"
-  instance_class = "db.t3.micro"
-  
-  allocated_storage     = 20
-  max_allocated_storage = 100
-  storage_encrypted     = true
-  kms_key_id           = aws_kms_key.backup_encryption.arn
-  
-  db_name  = "exampledb"
-  username = "adminuser"
-  password = "changeme123!" # Use AWS Secrets Manager in production
-  
-  db_subnet_group_name   = aws_db_subnet_group.example.name
-  vpc_security_group_ids = ["sg-12345678"] # Replace with actual security group ID
-  
-  backup_retention_period = 7
-  backup_window          = "03:00-04:00"
-  maintenance_window     = "sun:04:00-sun:05:00"
-  
-  skip_final_snapshot = true
-  deletion_protection = false
-  
-  tags = {
-    ToBackup = "true"
-    Owner    = "database@eulerhermes.com"
+# Backup Vault Lock
+resource "aws_backup_vault_lock_configuration" "primary" {
+  backup_vault_name   = aws_backup_vault.primary.name
+  min_retention_days  = var.vault_lock_days
+  changeable_for_days = 0
+}
+
+# Backup Selection
+resource "aws_backup_selection" "by_tag" {
+  iam_role_arn = aws_iam_role.backup_service.arn
+  name         = "by_tag"
+  plan_id      = aws_backup_plan.comprehensive.id
+
+  selection_tag {
+    type  = "STRINGEQUALS"
+    key   = "ToBackup"
+    value = "true"
   }
 }
 
-# Example DynamoDB table
-resource "aws_dynamodb_table" "example" {
-  name           = "allianz-trade-example-table"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "id"
-  
-  attribute {
-    name = "id"
-    type = "S"
-  }
-  
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.backup_encryption.arn
-  }
-  
-  point_in_time_recovery {
-    enabled = true
-  }
-  
-  tags = {
-    ToBackup = "true"
-    Owner    = "application@eulerhermes.com"
-  }
+# IAM Role for AWS Backup
+resource "aws_iam_role" "backup_service" {
+  name = "aws_backup_service_role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = {
+          Service = "backup.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  managed_policy_arns = [
+    "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup",
+    "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestore"
+  ]
 }
